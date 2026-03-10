@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# clogin - interactive cluster login selector
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CONF_FILE="${CLOGIN_CONF:-$SCRIPT_DIR/clusters.conf}"
+
+if [[ ! -f "$CONF_FILE" ]]; then
+    echo "Config not found: $CONF_FILE"
+    echo "Copy clusters.conf.example to clusters.conf and add your clusters."
+    exit 1
+fi
+
+# Parse config
+names=()
+cmds=()
+while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    name="${line%%|*}"
+    cmd="${line#*|}"
+    names+=("$name")
+    cmds+=("$cmd")
+done < "$CONF_FILE"
+
+if [[ ${#names[@]} -eq 0 ]]; then
+    echo "No clusters configured in $CONF_FILE"
+    exit 1
+fi
+
+count=${#names[@]}
+selected=0
+
+# Draw the menu
+draw_menu() {
+    # Move cursor up to overwrite previous menu (except on first draw)
+    if [[ "${1:-}" == "redraw" ]]; then
+        printf '\033[%dA' "$count"
+    fi
+    for i in "${!names[@]}"; do
+        if [[ $i -eq $selected ]]; then
+            printf '\033[1;32m > %s\033[0m\n' "${names[$i]}"
+        else
+            printf '   %s\n' "${names[$i]}"
+        fi
+    done
+}
+
+# Read a single keypress (handles arrow key escape sequences)
+read_key() {
+    local key
+    IFS= read -rsn1 key
+    if [[ "$key" == $'\x1b' ]]; then
+        IFS= read -rsn2 key
+        case "$key" in
+            '[A') echo "up" ;;
+            '[B') echo "down" ;;
+            *)    echo "" ;;
+        esac
+    elif [[ "$key" == "" ]]; then
+        echo "enter"
+    elif [[ "$key" == "k" ]]; then
+        echo "up"
+    elif [[ "$key" == "j" ]]; then
+        echo "down"
+    elif [[ "$key" == "q" ]]; then
+        echo "quit"
+    else
+        echo ""
+    fi
+}
+
+# Hide cursor, restore on exit
+trap 'printf "\033[?25h"' EXIT
+printf '\033[?25h'
+
+echo "Select a cluster (↑/↓ or j/k, Enter to connect, q to quit):"
+echo ""
+draw_menu first
+
+while true; do
+    key=$(read_key)
+    case "$key" in
+        up)
+            if ((selected > 0)); then ((selected--)); fi
+            draw_menu redraw
+            ;;
+        down)
+            if ((selected < count - 1)); then ((selected++)); fi
+            draw_menu redraw
+            ;;
+        enter)
+            echo ""
+            echo "Connecting to ${names[$selected]}..."
+            exec ${cmds[$selected]}
+            ;;
+        quit)
+            echo ""
+            echo "Cancelled."
+            exit 0
+            ;;
+    esac
+done

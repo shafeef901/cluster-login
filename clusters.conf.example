@@ -1,0 +1,10 @@
+# Cluster configuration file
+# Format: NAME|SSH_COMMAND
+# Lines starting with # are ignored
+#
+# Copy this file to clusters.conf and edit with your own clusters:
+#   cp clusters.conf.example clusters.conf
+
+mycluster|ssh -X user@mycluster.example.com
+another|ssh user@another.example.com
+devbox|ssh devbox
