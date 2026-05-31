@@ -28,6 +28,24 @@ if [[ ${#names[@]} -eq 0 ]]; then
     exit 1
 fi
 
+# Wrap an ssh command so the remote shell runs inside a persistent tmux
+# session, letting connections survive network drops. Reconnecting just
+# reattaches. Disable with CLOGIN_TMUX=0; override the session name with
+# CLOGIN_TMUX_SESSION (defaults to the cluster name).
+build_login_cmd() {
+    local name="$1" raw="$2"
+    # Skip wrapping if disabled, or if this isn't a plain ssh command.
+    if [[ "${CLOGIN_TMUX:-1}" == "0" ]] || [[ "$raw" != ssh && "$raw" != ssh\ * ]]; then
+        printf '%s' "$raw"
+        return
+    fi
+    local session="${CLOGIN_TMUX_SESSION:-$name}"
+    local rest="${raw#ssh}"
+    # -t forces a TTY (required for tmux over a remote command);
+    # `tmux new -A -s` attaches to the session or creates it if absent.
+    printf 'ssh -t%s tmux new -A -s %s' "$rest" "$session"
+}
+
 count=${#names[@]}
 selected=0
 
@@ -92,7 +110,7 @@ while true; do
         enter)
             echo ""
             echo "Connecting to ${names[$selected]}..."
-            exec ${cmds[$selected]}
+            exec $(build_login_cmd "${names[$selected]}" "${cmds[$selected]}")
             ;;
         quit)
             echo ""
