@@ -29,21 +29,49 @@ if [[ ${#names[@]} -eq 0 ]]; then
 fi
 
 # Wrap an ssh command so the remote shell runs inside a persistent tmux
-# session, letting connections survive network drops. Reconnecting just
-# reattaches. Disable with CLOGIN_TMUX=0; override the session name with
-# CLOGIN_TMUX_SESSION (defaults to the cluster name).
+# session, letting connections survive network drops — reconnecting reattaches.
+#
+# By default each new clogin connection gets its OWN remote session: it attaches
+# to the first session that has no client attached, otherwise it creates a fresh
+# uniquely-named one (e.g. vega, vega-2, vega-3). So opening a second terminal
+# gives you a second, independent session, while reconnecting after a drop
+# reattaches to the session you left (it now has no client) instead of spawning
+# yet another one.
+#
+# Env overrides:
+#   CLOGIN_TMUX=0               disable tmux wrapping for this run
+#   CLOGIN_TMUX_SESSION=<name>  force one fixed shared session — every
+#                               connection attaches to the same terminal (the
+#                               old mirroring behavior)
+#
+# The result is placed in the global LOGIN_CMD array so the remote command can
+# carry spaces/quotes without being mangled by word-splitting at the call site.
 build_login_cmd() {
     local name="$1" raw="$2"
+    LOGIN_CMD=()
     # Skip wrapping if disabled, or if this isn't a plain ssh command.
     if [[ "${CLOGIN_TMUX:-1}" == "0" ]] || [[ "$raw" != ssh && "$raw" != ssh\ * ]]; then
-        printf '%s' "$raw"
+        # shellcheck disable=SC2206  # intentional word-split of the raw command
+        LOGIN_CMD=($raw)
         return
     fi
-    local session="${CLOGIN_TMUX_SESSION:-$name}"
+    # Split the ssh options/host (everything after "ssh") into words.
     local rest="${raw#ssh}"
-    # -t forces a TTY (required for tmux over a remote command);
-    # `tmux new -A -s` attaches to the session or creates it if absent.
-    printf 'ssh -t%s tmux new -A -s %s' "$rest" "$session"
+    # shellcheck disable=SC2206
+    local ssh_args=($rest)
+
+    local remote
+    if [[ -n "${CLOGIN_TMUX_SESSION:-}" ]]; then
+        # Explicit fixed session: attach-or-create it; all connections mirror it.
+        remote="exec tmux new-session -A -s '$CLOGIN_TMUX_SESSION'"
+    else
+        # Default: one session per connection. Attach to the first session with
+        # no attached client; otherwise create a fresh, uniquely-named session.
+        local base="$name"
+        remote="t=\$(tmux list-sessions -F '#{session_attached} #{session_name}' 2>/dev/null | awk '\$1==0{print \$2; exit}'); if [ -n \"\$t\" ]; then exec tmux attach-session -t \"\$t\"; fi; if tmux has-session -t '$base' 2>/dev/null; then i=2; while tmux has-session -t \"$base-\$i\" 2>/dev/null; do i=\$((i+1)); done; exec tmux new-session -s \"$base-\$i\"; else exec tmux new-session -s '$base'; fi"
+    fi
+    # -t forces a TTY (required for tmux over a remote command).
+    LOGIN_CMD=(ssh -t "${ssh_args[@]}" "$remote")
 }
 
 count=${#names[@]}
@@ -110,7 +138,8 @@ while true; do
         enter)
             echo ""
             echo "Connecting to ${names[$selected]}..."
-            exec $(build_login_cmd "${names[$selected]}" "${cmds[$selected]}")
+            build_login_cmd "${names[$selected]}" "${cmds[$selected]}"
+            exec "${LOGIN_CMD[@]}"
             ;;
         quit)
             echo ""
